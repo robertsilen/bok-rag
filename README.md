@@ -80,3 +80,10 @@ Mac (host)
 - **Modell saknas**: `ollama pull nomic-embed-text:latest` (dras även automatiskt vid uppstart)
 - **Ogiltig API-nyckel**: chatten visar felmeddelande, ingestion fungerar utan nyckel
 - **Stor PDF (230+ MB)**: kan ta några minuter med GPU, progress visas i UI
+
+## Referenser
+
+- [MariaDB Vector Overview](https://mariadb.com/kb/en/vectors/) — VECTOR-datatyp och VECTOR INDEX
+- [MariaDB Vector Functions](https://mariadb.com/kb/en/vector-functions/) — VEC_DISTANCE, VEC_ToText m.fl.
+- [MariaDB Full-Text Search](https://mariadb.com/kb/en/full-text-index-overview/) — MATCH AGAINST med FULLTEXT INDEX
+- [Hybrid Search with MariaDB](https://mariadb.com/resources/blog/how-to-hybrid-search-with-mariadb/) — Reciprocal Rank Fusion (RRF) med vektor + fulltext
