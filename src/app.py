@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import threading
+import json
 
 import streamlit as st
 
@@ -63,6 +64,32 @@ def _show_diagnostics(diag, top_chunks=None):
             f"Konsensus-träffar: {diag.get('consensus_count', '?')}"
         )
 
+        st.markdown("**Promptar**")
+
+        st.markdown("*Query rewriting (Haiku) — system:*")
+        st.code(
+            "Du hjälper till att söka i en bok (PDF). "
+            "Givet en konversationshistorik och en ny fråga, skriv om frågan så att den "
+            "innehåller alla relevanta namn, begrepp och nyckelord som behövs för att "
+            "hitta rätt textstycken i boken — även sådant som bara nämndes i historiken. "
+            "Frågan ska fungera fristående utan historiken. "
+            "Svara ENBART med den omskrivna frågan, inget annat.",
+            language=None,
+        )
+        st.markdown("*Query rewriting (Haiku) — user:*")
+        st.code("Historik:\n{konversationshistorik, max 3 utbyten à 300 tecken}\n\nNy fråga: {frågan}", language=None)
+
+        st.markdown("*Chat (Sonnet) — system:*")
+        st.code(
+            "Du är en hjälpsam assistent som svarar på frågor om en bok. "
+            "Svara på svenska. Referera alltid till sidnummer. "
+            "Basera svaret enbart på den medskickade kontexten. "
+            "Om kontexten inte räcker, säg det.",
+            language=None,
+        )
+        st.markdown("*Chat (Sonnet) — user:*")
+        st.code("## Kontext från boken\n\n{chunks med sidnummer}\n\n## Fråga\n\n{frågan}", language=None)
+
         if top_chunks:
             st.markdown("**Top 3 chunks**")
             for i, c in enumerate(top_chunks[:3], 1):
@@ -72,6 +99,89 @@ def _show_diagnostics(diag, top_chunks=None):
                     f"Cosinus-avstånd: {vec_dist_str} | RRF: {c['rrf_score']:.5f}\n"
                     f"   {c['chunk_text'][:100]}..."
                 )
+
+
+def _safe_filename(s: str, max_len: int = 120) -> str:
+    """Make a filesystem-friendly name fragment."""
+    s = (s or "").strip()
+    out = "".join(ch if ch.isalnum() else "_" for ch in s)
+    out = "_".join(filter(None, out.split("_")))
+    return (out[:max_len] or "bok").strip("_")
+
+
+def _chunk_to_export_text(c: dict) -> str:
+    """Format a single retrieved chunk (includes optional context_before/after)."""
+    parts = []
+    if c.get("context_before"):
+        parts.append(f"[...] {c['context_before']}\n")
+    parts.append(c.get("chunk_text", ""))
+    if c.get("context_after"):
+        parts.append(f"\n\n{c['context_after']} [...]")
+    return "\n\n".join(p.strip() for p in parts if p is not None and str(p).strip())
+
+
+def _build_pages_txt(book_title: str, pages, top_chunks) -> str:
+    pages_sorted = sorted(set(int(p) for p in (pages or [])))
+    relevant_chunks = top_chunks or []
+
+    header = f"Bok: {book_title}\nSidor: {', '.join(str(p) for p in pages_sorted)}\n"
+    header += "\nExporten innehåller de chunkar som användes som kontext i chatten.\n\n"
+
+    page_map = {p: [] for p in pages_sorted}
+    for c in relevant_chunks:
+        pn = c.get("page_number")
+        if pn is None:
+            continue
+        pn = int(pn)
+        if pn in page_map:
+            page_map[pn].append(c)
+
+    parts = [header.strip()]
+    for p in pages_sorted:
+        chunks = sorted(
+            page_map[p],
+            key=lambda c: (c.get("paragraph_index", 0), c.get("id", 0)),
+        )
+        block = [f"=== Sida {p} ==="]
+        if not chunks:
+            block.append("(Inga chunkar hittades för denna sida i denna export.)")
+        else:
+            for i, c in enumerate(chunks, 1):
+                para_idx = c.get("paragraph_index", "?")
+                block.append(f"--- Chunk {i} (para {para_idx}) ---\n{_chunk_to_export_text(c)}")
+        parts.append("\n\n".join(block))
+
+    return "\n\n".join(parts).strip() + "\n"
+
+
+def _build_pages_json(book_title: str, pages, top_chunks) -> dict:
+    pages_sorted = sorted(set(int(p) for p in (pages or [])))
+    payload = {
+        "book_title": book_title,
+        "pages": pages_sorted,
+        "chunks": [],
+    }
+    page_set = set(pages_sorted)
+    for c in (top_chunks or []):
+        pn = c.get("page_number")
+        if pn is None:
+            continue
+        pn = int(pn)
+        if pn in page_set:
+            payload["chunks"].append(
+                {
+                    "page_number": pn,
+                    "paragraph_index": c.get("paragraph_index"),
+                    "chunk_text": c.get("chunk_text", ""),
+                    "context_before": c.get("context_before"),
+                    "context_after": c.get("context_after"),
+                }
+            )
+    payload["chunks"] = sorted(
+        payload["chunks"],
+        key=lambda c: (c.get("page_number", 0), c.get("paragraph_index", 0)),
+    )
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -219,12 +329,24 @@ if book_ready and st.session_state.chat_history:
         st.rerun()
 
 # Display chat history
-for msg in st.session_state.chat_history:
+for msg_idx, msg in enumerate(st.session_state.chat_history):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if msg["role"] == "assistant" and "pages" in msg:
             pages_str = ", ".join(str(p) for p in msg["pages"])
+            top_chunks_for_msg = msg.get("top_chunks") or []
+            export_txt = _build_pages_txt(active_book["title"], msg["pages"], top_chunks_for_msg)
+            export_json_obj = _build_pages_json(active_book["title"], msg["pages"], top_chunks_for_msg)
+            export_json = json.dumps(export_json_obj, ensure_ascii=False, indent=2)
+
+            pages_sorted = sorted(set(int(p) for p in msg["pages"]))
+            page_range = (
+                f"{pages_sorted[0]}-{pages_sorted[-1]}" if pages_sorted else "0"
+            )
             st.caption(f"📄 Sidor: {pages_str}")
+            with st.expander("Kopiera kontext chunks"):
+                st.code(export_txt, language=None, wrap_lines=True)
+
             if "diagnostics" in msg:
                 _show_diagnostics(msg["diagnostics"], msg.get("top_chunks"))
 
@@ -267,7 +389,21 @@ if prompt := st.chat_input("Ställ en fråga om boken...", disabled=not book_rea
 
                         st.markdown(answer)
                         pages_str = ", ".join(str(p) for p in page_numbers)
+
+                        # Exportera de sidor som ingick i kontexten (via top_chunks)
+                        msg_idx = len(st.session_state.chat_history)
+                        top_chunks_for_msg = top_chunks or []
+                        export_txt = _build_pages_txt(active_book["title"], page_numbers, top_chunks_for_msg)
+                        export_json_obj = _build_pages_json(active_book["title"], page_numbers, top_chunks_for_msg)
+                        export_json = json.dumps(export_json_obj, ensure_ascii=False, indent=2)
+
+                        pages_sorted = sorted(set(int(p) for p in page_numbers))
+                        page_range = (
+                            f"{pages_sorted[0]}-{pages_sorted[-1]}" if pages_sorted else "0"
+                        )
                         st.caption(f"📄 Sidor: {pages_str}")
+                        with st.expander("Kopiera kontext chunks"):
+                            st.code(export_txt, language=None, wrap_lines=True)
                         _show_diagnostics(diagnostics, top_chunks)
 
                         st.session_state.chat_history.append({
@@ -277,6 +413,10 @@ if prompt := st.chat_input("Ställ en fråga om boken...", disabled=not book_rea
                             "diagnostics": diagnostics,
                             "top_chunks": top_chunks,
                         })
+                        # Trigger a rerun so the freshly appended message is
+                        # rendered via the chat-history loop (which includes
+                        # the export/download controls).
+                        st.rerun()
 
                 except ValueError as e:
                     st.error(str(e))
