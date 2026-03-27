@@ -1,0 +1,45 @@
+services:
+  db:
+    image: mariadb:11.8
+    container_name: bookrag-db
+    environment:
+      MARIADB_ROOT_PASSWORD: bookrag_root
+      MARIADB_DATABASE: bookrag
+      MARIADB_USER: bookrag
+      MARIADB_PASSWORD: bookrag_pass
+    volumes:
+      - mariadb-data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "3307:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  app:
+    build: .
+    container_name: bookrag-app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_USER: bookrag
+      DB_PASSWORD: bookrag_pass
+      DB_NAME: bookrag
+      OLLAMA_HOST: host.docker.internal
+      OLLAMA_PORT: 11434
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+      - ./src:/app/src
+    ports:
+      - "8501:8501"
+    command: python /app/src/startup.py
+
+volumes:
+  mariadb-data:
