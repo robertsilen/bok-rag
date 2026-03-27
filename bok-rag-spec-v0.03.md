@@ -152,7 +152,14 @@ Tokenräkning: approximera med `len(text.split())` — tillräckligt för chunki
 
 Vid varje fråga:
 
-**Steg 1 — Skapa embedding** för frågan via Ollama (samma modell som vid ingestion).
+**Steg 0 — Query rewriting** (vid konversationshistorik):
+- Om det finns tidigare frågor/svar i chatten, skicka den nya frågan + de senaste 3 utbytena till Claude Haiku.
+- Haiku skriver om frågan till en fristående sökfråga med relevanta nyckelord, namn och ämnen från historiken.
+- Prompt: "Givet konversationshistoriken nedan, skriv om den nya frågan så att den fungerar som en fristående sökfråga. Inkludera relevanta nyckelord, namn och ämnen från historiken som behövs för att hitta rätt textavsnitt i en bok. Svara ENBART med den omskrivna frågan."
+- Om det är den första frågan (ingen historik): hoppa över detta steg.
+- Modell: `claude-haiku-3` (snabb och billig).
+
+**Steg 1 — Skapa embedding** för frågan (den omskrivna om steg 0 kördes, annars originalet) via Ollama (samma modell som vid ingestion).
 
 **Steg 2 — Vektorsökning** (top 20 chunks):
 ```sql
@@ -406,4 +413,4 @@ book-rag/
 |---------|-----------|
 | v0.01 | Ursprungligt utkast. |
 | v0.02 | One-command startup, ingestion-regler, drift-hints. |
-| v0.03 | Chunking-parametrar specificerade (target 500, min 50, max 1000 tokens). RRF-strategi definierad (k=60, top 8 chunks till LLM). MariaDB-transparenspanel tillagd med SQL-visning, söktider och statistik. Server-side ingestion (fortsätter vid stängd flik). Felhantering för API-nyckel och rate limits. Batch-embedding (10 chunks/anrop). context_before/context_after skickas till LLM. Cleanup vid misslyckad ingestion. VECTOR INDEX-begränsning dokumenterad (en per tabell). Ollama flyttad till nativ host-installation för Apple Silicon Metal GPU-acceleration (Docker-VM saknar GPU-tillgång). Progressbar med realtidsstatus under ingestion. `.streamlit/config.toml` måste kopieras explicit i Dockerfile. |
+| v0.03 | Query rewriting med Claude Haiku för bättre sökning vid uppföljningsfrågor. Chunking-parametrar specificerade (target 500, min 50, max 1000 tokens). RRF-strategi definierad (k=60, top 8 chunks till LLM). MariaDB-transparenspanel tillagd med SQL-visning, söktider och statistik. Server-side ingestion (fortsätter vid stängd flik). Felhantering för API-nyckel och rate limits. Batch-embedding (10 chunks/anrop). context_before/context_after skickas till LLM. Cleanup vid misslyckad ingestion. VECTOR INDEX-begränsning dokumenterad (en per tabell). Ollama flyttad till nativ host-installation för Apple Silicon Metal GPU-acceleration (Docker-VM saknar GPU-tillgång). Progressbar med realtidsstatus under ingestion. `.streamlit/config.toml` måste kopieras explicit i Dockerfile. |

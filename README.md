@@ -5,6 +5,7 @@ En lokal, Docker-baserad RAG-applikation för frågor mot PDF-böcker som visar 
 ## Funktioner
 
 - **Hybrid sökning**: kombinerar vektorsökning (HNSW) och fulltextsökning med Reciprocal Rank Fusion (RRF)
+- **Query rewriting**: uppföljningsfrågor skrivs om automatiskt via Claude Haiku för bättre sökträffar
 - **MariaDB 11.8 LTS**: VECTOR-datatyp, VECTOR INDEX med cosinus-avstånd
 - **Lokala embeddings**: nomic-embed-text via Ollama (768 dimensioner) med Apple Silicon GPU-acceleration
 - **Claude API**: för intelligenta chattsvar med sidreferenser
