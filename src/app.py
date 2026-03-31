@@ -44,24 +44,31 @@ def _show_diagnostics(diag, top_chunks=None):
         if "ft_sql" in diag:
             st.code(diag["ft_sql"], language="sql")
 
-        st.markdown("**Söktider**")
+        st.markdown("**Söktider och träffar**")
         timing = (
             f"```\n"
-            f"Vektorsökning:    {diag.get('vec_time_ms', '?')} ms\n"
-            f"Fulltextsökning:  {diag.get('ft_time_ms', '?')} ms\n"
-            f"RRF-merge:        {diag.get('rrf_time_ms', '?')} ms\n"
+            f"Vektorsökning:    {diag.get('vec_time_ms', '?')} ms, {diag.get('vec_count', '?')} antal\n"
+            f"Fulltextsökning:  {diag.get('ft_time_ms', '?')} ms, {diag.get('ft_count', '?')} antal\n"
+            f"RRF-merge:        {diag.get('rrf_time_ms', '?')} ms, "
+            f"{diag.get('consensus_count', '?')} gemensamma, "
+            f"{diag.get('rrf_count', '?')} skickade till LLM\n"
             f"LLM-svar:         {diag.get('llm_time_ms', '?')} ms\n"
             f"Totalt:           {diag.get('total_time_ms', '?')} ms\n"
             f"```"
         )
         st.markdown(timing)
 
-        st.markdown("**Retrieval-resultat**")
-        st.text(
-            f"Vektorsökning: {diag.get('vec_count', '?')} träffar\n"
-            f"Fulltextsökning: {diag.get('ft_count', '?')} träffar\n"
-            f"Efter RRF: {diag.get('rrf_count', '?')} skickade till LLM\n"
-            f"Konsensus-träffar: {diag.get('consensus_count', '?')}"
+        st.markdown("**Sidor per steg**")
+        st.code(
+            "Vektorsökning:    "
+            f"{_fmt_pages(diag.get('vec_pages'))}\n"
+            "Fulltextsökning:  "
+            f"{_fmt_pages(diag.get('ft_pages'))}\n"
+            "Gemensamma:       "
+            f"{_fmt_pages(diag.get('consensus_pages'))}\n"
+            "Skickade till LLM:"
+            f" {_fmt_pages(diag.get('llm_pages'))}",
+            language=None,
         )
 
         st.markdown("**Promptar**")
@@ -107,6 +114,50 @@ def _safe_filename(s: str, max_len: int = 120) -> str:
     out = "".join(ch if ch.isalnum() else "_" for ch in s)
     out = "_".join(filter(None, out.split("_")))
     return (out[:max_len] or "bok").strip("_")
+
+
+def _fmt_ms(value):
+    if value is None:
+        return "?"
+    return f"{float(value):.1f}"
+
+
+def _fmt_pages(pages):
+    pages = pages or []
+    if not pages:
+        return "-"
+    return ", ".join(str(p) for p in pages)
+
+
+def _render_phase_timeline(container, diag):
+    lines = []
+    if "vec_time_ms" in diag:
+        lines.append(
+            f"Vektorsökning:    {_fmt_ms(diag.get('vec_time_ms'))} ms, {diag.get('vec_count', '?')} antal"
+        )
+        lines.append(f"  sidor:          {_fmt_pages(diag.get('vec_pages'))}")
+    if "ft_time_ms" in diag:
+        lines.append(
+            f"Fulltextsökning:  {_fmt_ms(diag.get('ft_time_ms'))} ms, {diag.get('ft_count', '?')} antal"
+        )
+        lines.append(f"  sidor:          {_fmt_pages(diag.get('ft_pages'))}")
+    if "rrf_time_ms" in diag:
+        lines.append(
+            f"RRF-merge:        {_fmt_ms(diag.get('rrf_time_ms'))} ms, "
+            f"{diag.get('consensus_count', '?')} gemensamma, "
+            f"{diag.get('rrf_count', '?')} skickade till LLM"
+        )
+        lines.append(f"  gemensamma:     {_fmt_pages(diag.get('consensus_pages'))}")
+        lines.append(f"  till LLM:       {_fmt_pages(diag.get('llm_pages'))}")
+    if diag.get("llm_running"):
+        lines.append("LLM-svar:         pågår...")
+    elif "llm_time_ms" in diag:
+        lines.append(f"LLM-svar:         {_fmt_ms(diag.get('llm_time_ms'))} ms")
+    if "total_time_ms" in diag:
+        lines.append(f"Totalt:           {_fmt_ms(diag.get('total_time_ms'))} ms")
+
+    if lines:
+        container.code("\n".join(lines), language=None)
 
 
 def _chunk_to_export_text(c: dict) -> str:
@@ -363,6 +414,13 @@ if prompt := st.chat_input("Ställ en fråga om boken...", disabled=not book_rea
             with st.spinner("Söker och genererar svar..."):
                 t_total_start = time.perf_counter()
                 try:
+                    phase_diag = {}
+                    phase_timeline = st.empty()
+
+                    def retrieval_progress_cb(_stage, payload):
+                        phase_diag.update(payload or {})
+                        _render_phase_timeline(phase_timeline, phase_diag)
+
                     # Rewrite query if there's conversation history
                     llm_history = [
                         {"role": m["role"], "content": m["content"]}
@@ -371,21 +429,38 @@ if prompt := st.chat_input("Ställ en fråga om boken...", disabled=not book_rea
                     ]
                     search_query = llm.rewrite_query(prompt, llm_history)
 
-                    top_chunks, diagnostics = retriever.hybrid_search(active_book["id"], search_query)
+                    top_chunks, diagnostics = retriever.hybrid_search(
+                        active_book["id"],
+                        search_query,
+                        progress_callback=retrieval_progress_cb,
+                    )
                     if search_query != prompt:
                         diagnostics["search_query"] = search_query
 
                     if not top_chunks:
+                        diagnostics["total_time_ms"] = round((time.perf_counter() - t_total_start) * 1000, 1)
+                        phase_diag.update({
+                            "total_time_ms": diagnostics["total_time_ms"],
+                        })
+                        _render_phase_timeline(phase_timeline, phase_diag)
                         st.warning("Inga relevanta stycken hittades.")
                         st.session_state.chat_history.append({
                             "role": "assistant",
                             "content": "Inga relevanta stycken hittades i boken.",
                         })
                     else:
+                        phase_diag["llm_running"] = True
+                        _render_phase_timeline(phase_timeline, phase_diag)
                         t_llm_start = time.perf_counter()
                         answer, page_numbers = llm.chat(prompt, top_chunks, history=llm_history)
                         diagnostics["llm_time_ms"] = round((time.perf_counter() - t_llm_start) * 1000, 1)
                         diagnostics["total_time_ms"] = round((time.perf_counter() - t_total_start) * 1000, 1)
+                        phase_diag.pop("llm_running", None)
+                        phase_diag.update({
+                            "llm_time_ms": diagnostics["llm_time_ms"],
+                            "total_time_ms": diagnostics["total_time_ms"],
+                        })
+                        _render_phase_timeline(phase_timeline, phase_diag)
 
                         st.markdown(answer)
                         pages_str = ", ".join(str(p) for p in page_numbers)
